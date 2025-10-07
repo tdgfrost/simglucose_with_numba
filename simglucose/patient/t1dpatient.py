@@ -27,7 +27,7 @@ def _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, p
                          params_Fsnc):
     dxdt = np.zeros(13)
     d = action_CHO * 1000  # g -> mg
-    insulin = action_insulin[0] * 6000 / params_BW  # U/min -> pmol/kg/min
+    insulin = action_insulin * 6000 / params_BW  # U/min -> pmol/kg/min
     basal = params_u2ss * params_BW / 6000  # U/min
 
     # Glucose in the stomach
@@ -120,6 +120,8 @@ def _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, p
 def jitted_model(t, x, action, params, last_Qsto, last_foodtaken):
     action_CHO = action.CHO
     action_insulin = action.insulin
+    if not isinstance(action_insulin, (float, int)):
+        action_insulin = action_insulin[0]
     params_BW = params.BW
     params_u2ss = params.u2ss
     params_kmax = params.kmax
