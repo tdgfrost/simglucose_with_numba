@@ -5,6 +5,7 @@ import pandas as pd
 from collections import namedtuple
 import logging
 import pkg_resources
+from numba import njit
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,154 @@ Observation = namedtuple("observation", ["Gsub"])
 PATIENT_PARA_FILE = pkg_resources.resource_filename(
     "simglucose", "params/vpatient_params.csv"
 )
+
+
+@njit
+def _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, params_BW,
+                         params_u2ss, params_kmax, params_b, params_d, params_f, params_kmin,
+                         params_kabs, params_kp1, params_kp2, params_kp3, params_ke1,
+                         params_ke2, params_k1, params_k2, params_Vm0, params_Vmx, params_Km0,
+                         params_m1, params_m2, params_m4, params_ka1, params_ka2, params_Vi,
+                         params_p2u, params_Ib, params_ki, params_m30, params_kd, params_ksc,
+                         params_Fsnc):
+    dxdt = np.zeros(13)
+    d = action_CHO * 1000  # g -> mg
+    insulin = action_insulin[0] * 6000 / params_BW  # U/min -> pmol/kg/min
+    basal = params_u2ss * params_BW / 6000  # U/min
+
+    # Glucose in the stomach
+    qsto = x[0] + x[1]
+    # NOTE: Dbar is in unit mg, hence last_foodtaken needs to be converted
+    # from mg to g. See https://github.com/jxx123/simglucose/issues/41 for
+    # details.
+    Dbar = last_Qsto + last_foodtaken * 1000  # unit: mg
+
+    # Stomach solid
+    dxdt[0] = -params_kmax * x[0] + d
+
+    if Dbar > 0:
+        aa = 5 / (2 * Dbar * (1 - params_b))
+        cc = 5 / (2 * Dbar * params_d)
+        kgut = params_kmin + (params_kmax - params_kmin) / 2 * (
+                np.tanh(aa * (qsto - params_b * Dbar))
+                - np.tanh(cc * (qsto - params_d * Dbar))
+                + 2
+        )
+    else:
+        kgut = params_kmax
+
+    # stomach liquid
+    dxdt[1] = params_kmax * x[0] - x[1] * kgut
+
+    # intestine
+    dxdt[2] = kgut * x[1] - params_kabs * x[2]
+
+    # Rate of appearance
+    Rat = params_f * params_kabs * x[2] / params_BW
+    # Glucose Production
+    EGPt = params_kp1 - params_kp2 * x[3] - params_kp3 * x[8]
+    # Glucose Utilization
+    Uiit = params_Fsnc
+
+    # renal excretion
+    if x[3] > params_ke2:
+        Et = params_ke1 * (x[3] - params_ke2)
+    else:
+        Et = 0
+
+    # glucose kinetics
+    # plus dextrose IV injection input u[2] if needed
+    dxdt[3] = max(EGPt, 0) + Rat - Uiit - Et - params_k1 * x[3] + params_k2 * x[4]
+    dxdt[3] = (x[3] >= 0) * dxdt[3]
+
+    Vmt = params_Vm0 + params_Vmx * x[6]
+    Kmt = params_Km0
+    Uidt = Vmt * x[4] / (Kmt + x[4])
+    dxdt[4] = -Uidt + params_k1 * x[3] - params_k2 * x[4]
+    dxdt[4] = (x[4] >= 0) * dxdt[4]
+
+    # insulin kinetics
+    dxdt[5] = (
+            -(params_m2 + params_m4) * x[5]
+            + params_m1 * x[9]
+            + params_ka1 * x[10]
+            + params_ka2 * x[11]
+    )  # plus insulin IV injection u[3] if needed
+    It = x[5] / params_Vi
+    dxdt[5] = (x[5] >= 0) * dxdt[5]
+
+    # insulin action on glucose utilization
+    dxdt[6] = -params_p2u * x[6] + params_p2u * (It - params_Ib)
+
+    # insulin action on production
+    dxdt[7] = -params_ki * (x[7] - It)
+
+    dxdt[8] = -params_ki * (x[8] - x[7])
+
+    # insulin in the liver (pmol/kg)
+    dxdt[9] = -(params_m1 + params_m30) * x[9] + params_m2 * x[5]
+    dxdt[9] = (x[9] >= 0) * dxdt[9]
+
+    # subcutaneous insulin kinetics
+    dxdt[10] = insulin - (params_ka1 + params_kd) * x[10]
+    dxdt[10] = (x[10] >= 0) * dxdt[10]
+
+    dxdt[11] = params_kd * x[10] - params_ka2 * x[11]
+    dxdt[11] = (x[11] >= 0) * dxdt[11]
+
+    # subcutaneous glucose
+    dxdt[12] = -params_ksc * x[12] + params_ksc * x[3]
+    dxdt[12] = (x[12] >= 0) * dxdt[12]
+
+    return dxdt, action_insulin, basal
+
+
+def jitted_model(t, x, action, params, last_Qsto, last_foodtaken):
+    action_CHO = action.CHO
+    action_insulin = action.insulin
+    params_BW = params.BW
+    params_u2ss = params.u2ss
+    params_kmax = params.kmax
+    params_b = params.b
+    params_d = params.d
+    params_f = params.f
+    params_kmin = params.kmin
+    params_kabs = params.kabs
+    params_kp1 = params.kp1
+    params_kp2 = params.kp2
+    params_kp3 = params.kp3
+    params_ke1 = params.ke1
+    params_ke2 = params.ke2
+    params_k1 = params.k1
+    params_k2 = params.k2
+    params_Vm0 = params.Vm0
+    params_Vmx = params.Vmx
+    params_Km0 = params.Km0
+    params_m1 = params.m1
+    params_m2 = params.m2
+    params_m4 = params.m4
+    params_ka1 = params.ka1
+    params_ka2 = params.ka2
+    params_Vi = params.Vi
+    params_p2u = params.p2u
+    params_Ib = params.Ib
+    params_ki = params.ki
+    params_m30 = params.m30
+    params_kd = params.kd
+    params_ksc = params.ksc
+    params_Fsnc = params.Fsnc
+    dxdt, action_insulin, basal =  _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, params_BW,
+                         params_u2ss, params_kmax, params_b, params_d, params_f, params_kmin,
+                         params_kabs, params_kp1, params_kp2, params_kp3, params_ke1,
+                         params_ke2, params_k1, params_k2, params_Vm0, params_Vmx, params_Km0,
+                         params_m1, params_m2, params_m4, params_ka1, params_ka2, params_Vi,
+                         params_p2u, params_Ib, params_ki, params_m30, params_kd, params_ksc,
+                         params_Fsnc)
+
+    if action_insulin > basal:
+        logger.debug("t = {}, injecting insulin: {}".format(t, action_insulin))
+
+    return dxdt
 
 
 class T1DPatient(Patient):
@@ -113,99 +262,7 @@ class T1DPatient(Patient):
 
     @staticmethod
     def model(t, x, action, params, last_Qsto, last_foodtaken):
-        dxdt = np.zeros(13)
-        d = action.CHO * 1000  # g -> mg
-        insulin = action.insulin * 6000 / params.BW  # U/min -> pmol/kg/min
-        basal = params.u2ss * params.BW / 6000  # U/min
-
-        # Glucose in the stomach
-        qsto = x[0] + x[1]
-        # NOTE: Dbar is in unit mg, hence last_foodtaken needs to be converted
-        # from mg to g. See https://github.com/jxx123/simglucose/issues/41 for
-        # details.
-        Dbar = last_Qsto + last_foodtaken * 1000  # unit: mg
-
-        # Stomach solid
-        dxdt[0] = -params.kmax * x[0] + d
-
-        if Dbar > 0:
-            aa = 5 / (2 * Dbar * (1 - params.b))
-            cc = 5 / (2 * Dbar * params.d)
-            kgut = params.kmin + (params.kmax - params.kmin) / 2 * (
-                np.tanh(aa * (qsto - params.b * Dbar))
-                - np.tanh(cc * (qsto - params.d * Dbar))
-                + 2
-            )
-        else:
-            kgut = params.kmax
-
-        # stomach liquid
-        dxdt[1] = params.kmax * x[0] - x[1] * kgut
-
-        # intestine
-        dxdt[2] = kgut * x[1] - params.kabs * x[2]
-
-        # Rate of appearance
-        Rat = params.f * params.kabs * x[2] / params.BW
-        # Glucose Production
-        EGPt = params.kp1 - params.kp2 * x[3] - params.kp3 * x[8]
-        # Glucose Utilization
-        Uiit = params.Fsnc
-
-        # renal excretion
-        if x[3] > params.ke2:
-            Et = params.ke1 * (x[3] - params.ke2)
-        else:
-            Et = 0
-
-        # glucose kinetics
-        # plus dextrose IV injection input u[2] if needed
-        dxdt[3] = max(EGPt, 0) + Rat - Uiit - Et - params.k1 * x[3] + params.k2 * x[4]
-        dxdt[3] = (x[3] >= 0) * dxdt[3]
-
-        Vmt = params.Vm0 + params.Vmx * x[6]
-        Kmt = params.Km0
-        Uidt = Vmt * x[4] / (Kmt + x[4])
-        dxdt[4] = -Uidt + params.k1 * x[3] - params.k2 * x[4]
-        dxdt[4] = (x[4] >= 0) * dxdt[4]
-
-        # insulin kinetics
-        dxdt[5] = (
-            -(params.m2 + params.m4) * x[5]
-            + params.m1 * x[9]
-            + params.ka1 * x[10]
-            + params.ka2 * x[11]
-        )  # plus insulin IV injection u[3] if needed
-        It = x[5] / params.Vi
-        dxdt[5] = (x[5] >= 0) * dxdt[5]
-
-        # insulin action on glucose utilization
-        dxdt[6] = -params.p2u * x[6] + params.p2u * (It - params.Ib)
-
-        # insulin action on production
-        dxdt[7] = -params.ki * (x[7] - It)
-
-        dxdt[8] = -params.ki * (x[8] - x[7])
-
-        # insulin in the liver (pmol/kg)
-        dxdt[9] = -(params.m1 + params.m30) * x[9] + params.m2 * x[5]
-        dxdt[9] = (x[9] >= 0) * dxdt[9]
-
-        # subcutaneous insulin kinetics
-        dxdt[10] = insulin - (params.ka1 + params.kd) * x[10]
-        dxdt[10] = (x[10] >= 0) * dxdt[10]
-
-        dxdt[11] = params.kd * x[10] - params.ka2 * x[11]
-        dxdt[11] = (x[11] >= 0) * dxdt[11]
-
-        # subcutaneous glucose
-        dxdt[12] = -params.ksc * x[12] + params.ksc * x[3]
-        dxdt[12] = (x[12] >= 0) * dxdt[12]
-
-        if action.insulin > basal:
-            logger.debug("t = {}, injecting insulin: {}".format(t, action.insulin))
-
-        return dxdt
+        return jitted_model(t, x, action, params, last_Qsto, last_foodtaken)
 
     @property
     def observation(self):
