@@ -1,4 +1,6 @@
 import numpy as np
+from numba import njit
+
 
 def risk_index(BG, horizon):
     # BG is in mg/dL
@@ -10,6 +12,8 @@ def risk_index(BG, horizon):
 
     return (LBGI, HBGI, RI)
 
+
+@njit
 def risk(BG):
     """
     Risk is a percentage - ranging from 0 to 100%.
