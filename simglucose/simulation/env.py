@@ -31,6 +31,14 @@ def risk_diff(BG_last_hour):
         _, _, risk_current = risk_index([BG_last_hour[-1]], 1)
         _, _, risk_prev = risk_index([BG_last_hour[-2]], 1)
         return risk_prev - risk_current
+    
+
+def risk_return(BG_last_hour):
+    if len(BG_last_hour) < 1:
+        return 0
+    else:
+        _, _, risk_current = risk_index([BG_last_hour[-1]], 1)
+        return -risk_current
 
 
 class T1DSimEnv(object):
@@ -63,7 +71,7 @@ class T1DSimEnv(object):
 
         return CHO, insulin, BG, CGM
 
-    def step(self, action, reward_fun=risk_diff):
+    def step(self, action, reward_fun=risk_return):
         """
         action is a namedtuple with keys: basal, bolus
         """
