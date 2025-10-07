@@ -97,7 +97,7 @@ class T1DSimEnv(object):
         self.HBGI_hist.append(HBGI)
 
         # Compute reward, and decide whether game is over
-        window_size = int(60 / self.sample_time)
+        window_size = 20
         BG_last_hour = self.CGM_hist[-window_size:]
         reward = reward_fun(BG_last_hour)
         done = BG < 10 or BG > 600
