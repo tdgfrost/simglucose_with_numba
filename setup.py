@@ -15,6 +15,7 @@ setup(
         "pathos>=0.3.1",
         "scipy>=1.11.0",
         "matplotlib>=3.7.2",
+        "numba>=0.62.1",
         "numpy>=1.25.0",
         "pandas>=2.0.3",
     ],
