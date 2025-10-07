@@ -5,7 +5,9 @@ import pandas as pd
 from collections import namedtuple
 import logging
 import pkg_resources
+import numba as nb
 from numba import njit
+from numba.experimental import jitclass
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +18,113 @@ PATIENT_PARA_FILE = pkg_resources.resource_filename(
     "simglucose", "params/vpatient_params.csv"
 )
 
+params_spec = [
+    ('BW', nb.float64),
+    ('u2ss', nb.float64),
+    ('kmax', nb.float64),
+    ('b', nb.float64),
+    ('d', nb.float64),
+    ('f', nb.float64),
+    ('kmin', nb.float64),
+    ('kabs', nb.float64),
+    ('kp1', nb.float64),
+    ('kp2', nb.float64),
+    ('kp3', nb.float64),
+    ('ke1', nb.float64),
+    ('ke2', nb.int64),      # Mapped to int64
+    ('k1', nb.float64),
+    ('k2', nb.float64),
+    ('Vm0', nb.float64),
+    ('Vmx', nb.float64),
+    ('Km0', nb.float64),
+    ('m1', nb.float64),
+    ('m2', nb.float64),
+    ('m4', nb.float64),
+    ('ka1', nb.float64),
+    ('ka2', nb.float64),
+    ('Vi', nb.float64),
+    ('p2u', nb.float64),
+    ('Ib', nb.float64),
+    ('ki', nb.float64),
+    ('m30', nb.float64),
+    ('kd', nb.float64),
+    ('ksc', nb.float64),
+    ('Fsnc', nb.int64),     # Mapped to int64
+]
 
-@njit
+# A complete, copy-pasteable jitclass using the spec above
+@jitclass(params_spec)
+class NumbaParams(object):
+    def __init__(self, BW, u2ss, kmax, b, d, f, kmin, kabs, kp1, kp2, kp3,
+                 ke1, ke2, k1, k2, Vm0, Vmx, Km0, m1, m2, m4, ka1, ka2,
+                 Vi, p2u, Ib, ki, m30, kd, ksc, Fsnc):
+        self.BW = BW
+        self.u2ss = u2ss
+        self.kmax = kmax
+        self.b = b
+        self.d = d
+        self.f = f
+        self.kmin = kmin
+        self.kabs = kabs
+        self.kp1 = kp1
+        self.kp2 = kp2
+        self.kp3 = kp3
+        self.ke1 = ke1
+        self.ke2 = ke2
+        self.k1 = k1
+        self.k2 = k2
+        self.Vm0 = Vm0
+        self.Vmx = Vmx
+        self.Km0 = Km0
+        self.m1 = m1
+        self.m2 = m2
+        self.m4 = m4
+        self.ka1 = ka1
+        self.ka2 = ka2
+        self.Vi = Vi
+        self.p2u = p2u
+        self.Ib = Ib
+        self.ki = ki
+        self.m30 = m30
+        self.kd = kd
+        self.ksc = ksc
+        self.Fsnc = Fsnc
+
+
+class ParamManager:
+    """
+    A wrapper that holds both pandas and Numba parameter versions.
+
+    It delegates attribute access to the pandas Series by default,
+    making it compatible with libraries like simglucose. The optimized
+    Numba version is available via the `.numba` attribute for use in
+    performance-critical functions.
+    """
+    def __init__(self, pandas_params_series):
+        # Store the original pandas series
+        self._pandas_params = pandas_params_series
+
+        # Create and store the Numba jitclass instance immediately
+        self._numba_params = NumbaParams(
+            *[pandas_params_series[name] for name, _ in params_spec]
+        )
+
+    def __getattr__(self, name):
+        """
+        This is the magic part. If an attribute isn't found on this
+        object, it automatically looks for it on the pandas Series.
+        """
+        return getattr(self._pandas_params, name)
+    
+    def __getitem__(self, key):
+        """
+        Delegates bracket access (e.g., params["BW"]).
+        This is the new method that fixes the error.
+        """
+        return self._pandas_params[key]
+
+
+@njit(fastmath=True)
 def _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, params_BW,
                          params_u2ss, params_kmax, params_b, params_d, params_f, params_kmin,
                          params_kabs, params_kp1, params_kp2, params_kp3, params_ke1,
@@ -181,7 +288,7 @@ class T1DPatient(Patient):
               params.iloc[2:15]
             - t0: simulation start time, it is 0 by default
         """
-        self._params = params
+        self._params = ParamManager(params)
         self._init_state = init_state
         self.random_init_bg = random_init_bg
         self._seed = seed
@@ -254,7 +361,7 @@ class T1DPatient(Patient):
 
         # ODE solver
         self._odesolver.set_f_params(
-            action, self._params, self._last_Qsto, self._last_foodtaken
+            action, self._params._numba_params, self._last_Qsto, self._last_foodtaken
         )
         if self._odesolver.successful():
             self._odesolver.integrate(self._odesolver.t + self.sample_time)
