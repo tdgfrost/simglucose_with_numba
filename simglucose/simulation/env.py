@@ -41,6 +41,22 @@ def risk_return(BG_last_hour):
         return (-risk_current + 100) / 144_000
 
 
+def bg_in_range(BG_last_hour):
+    bg = BG_last_hour[0]
+    # Global minimum = -1800
+    # Global maximum = 0
+    if bg < 70:
+        r = -0.5 * (70 - bg) ** 2
+    elif bg > 180:
+        r = -0.01 * (bg - 180) ** 2
+    else:
+        r = -0.005 * (bg - 110) ** 2
+
+    # Scaled to [0, 1] over 1440 minutes
+    r = ((r + 1800) / 1800) / 1440
+    return r
+
+
 class T1DSimEnv(object):
     def __init__(self, patient, sensor, pump, scenario):
         self.patient = patient
@@ -71,7 +87,7 @@ class T1DSimEnv(object):
 
         return CHO, insulin, BG, CGM
 
-    def step(self, action, reward_fun=risk_return):
+    def step(self, action, reward_fun=bg_in_range):
         """
         action is a namedtuple with keys: basal, bolus
         """
