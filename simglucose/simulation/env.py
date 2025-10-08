@@ -93,10 +93,10 @@ class T1DSimEnv(object):
             insulin += tmp_insulin / self.sample_time
             BG += tmp_BG / self.sample_time
             CGM += tmp_CGM / self.sample_time
-            reward += reward_fun([CGM])
-
             most_recent_CGM.append(tmp_CGM)
             total_CHO += tmp_CHO
+ 
+            reward += reward_fun([sum(most_recent_CGM) / len(most_recent_CGM)])
 
             if (i+1) % 3 == 0:
                 self.insulin_hist.append(insulin)
@@ -131,7 +131,7 @@ class T1DSimEnv(object):
         historic_obs = [[i,j] for i,j in zip(self.CGM_hist, self.insulin_hist)]
         if (i+1) % 3 != 0:  # In case sample time is not multiple of 3
             historic_obs.append([CGM, insulin, interval_CHO])
-        obs = Observation(CGM=[sum(most_recent_CGM) / 3, insulin, total_CHO])
+        obs = Observation(CGM=[sum(most_recent_CGM) / len(most_recent_CGM), insulin, total_CHO])
 
         return Step(
             observation=obs,
