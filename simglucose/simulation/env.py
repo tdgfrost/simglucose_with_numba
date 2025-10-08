@@ -76,17 +76,27 @@ class T1DSimEnv(object):
         action is a namedtuple with keys: basal, bolus
         """
         CHO = 0.0
+        interval_CHO = 0.0
         insulin = 0.0
         BG = 0.0
         CGM = 0.0
+        reward = 0.0
 
-        for _ in range(int(self.sample_time)):
+        for i in range(int(self.sample_time)):
             # Compute moving average as the sample measurements
             tmp_CHO, tmp_insulin, tmp_BG, tmp_CGM = self.mini_step(action)
+            interval_CHO += tmp_CHO
             CHO += tmp_CHO / self.sample_time
             insulin += tmp_insulin / self.sample_time
             BG += tmp_BG / self.sample_time
             CGM += tmp_CGM / self.sample_time
+            reward += reward_fun([CGM])
+
+            if (i+1) % 3 == 0:
+                self.insulin_hist.append(insulin)
+                self.CGM_hist.append(CGM)
+                self.CHO_hist.append(interval_CHO)
+                interval_CHO = 0.0
 
         # Compute risk index
         horizon = 1
@@ -105,11 +115,17 @@ class T1DSimEnv(object):
         self.HBGI_hist.append(HBGI)
 
         # Compute reward, and decide whether game is over
-        window_size = 20
-        BG_last_hour = self.CGM_hist[-window_size:]
-        reward = reward_fun(BG_last_hour)
+        # window_size = 20
+        # BG_last_hour = self.CGM_hist[-window_size:]
+        # reward = reward_fun(BG_last_hour)
         done = BG < 10 or BG > 600
-        obs = Observation(CGM=CGM)
+
+        # Observation should be (L, 2) for (CGM, insulin) - capped to last 3 hours
+        window_size = 60  # 3 hours of history with 3-min intervals
+        historic_obs = [[i,j] for i,j in zip(self.CGM_hist, self.insulin_hist)]
+        if (i+1) % 3 != 0:  # In case sample time is not multiple of 3
+            historic_obs.append([CGM, insulin, interval_CHO])
+        obs = Observation(CGM=[CGM, insulin, CHO])
 
         return Step(
             observation=obs,
@@ -120,6 +136,7 @@ class T1DSimEnv(object):
             meal=CHO,
             patient_state=self.patient.state,
             time=self.time,
+            historic_obs=historic_obs,
             bg=BG,
             lbgi=LBGI,
             hbgi=HBGI,
@@ -140,8 +157,8 @@ class T1DSimEnv(object):
         self.risk_hist = [risk]
         self.LBGI_hist = [LBGI]
         self.HBGI_hist = [HBGI]
-        self.CHO_hist = []
-        self.insulin_hist = []
+        self.CHO_hist = [0]
+        self.insulin_hist = [0]
 
     def reset(self):
         self.patient.reset()
@@ -150,7 +167,9 @@ class T1DSimEnv(object):
         self.scenario.reset()
         self._reset()
         CGM = self.sensor.measure(self.patient)
-        obs = Observation(CGM=CGM)
+        # Obs of shape (L, 2) for CGM, insulin, CHO
+        historic_obs = [[CGM, 0, 0]]
+        obs = Observation(CGM=[CGM, 0, 0])
         return Step(
             observation=obs,
             reward=0,
@@ -160,6 +179,7 @@ class T1DSimEnv(object):
             meal=0,
             patient_state=self.patient.state,
             time=self.time,
+            historic_obs=historic_obs,
             bg=self.BG_hist[0],
             lbgi=self.LBGI_hist[0],
             hbgi=self.HBGI_hist[0],

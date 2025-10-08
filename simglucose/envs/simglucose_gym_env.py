@@ -141,7 +141,7 @@ class T1DSimGymnaisumEnv(gymnasium.Env):
             seed=seed,
         )
         self.observation_space = gymnasium.spaces.Box(
-            low=0, high=self.MAX_BG, shape=(1,), dtype=np.float32
+            low=np.array([0,0,0]), high=np.array([self.MAX_BG, self.env.max_basal, np.inf]), shape=(3,), dtype=np.float32
         )
         self.action_space = gymnasium.spaces.Box(
             low=0, high=self.env.max_basal, shape=(1,), dtype=np.float32
@@ -159,12 +159,12 @@ class T1DSimGymnaisumEnv(gymnasium.Env):
         # )
         # Once the max_episode_steps is set, the truncated value will be overridden.
         truncated = False
-        return np.array([obs.CGM], dtype=np.float32), reward, done, truncated, info
+        return np.array(obs.CGM, dtype=np.float32), reward, done, truncated, info
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         obs, _, _, info = self.env._raw_reset()
-        return np.array([obs.CGM], dtype=np.float32), info
+        return np.array(obs.CGM, dtype=np.float32), info
 
     def render(self):
         if self.render_mode == "human":
