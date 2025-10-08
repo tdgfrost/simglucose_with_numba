@@ -38,7 +38,7 @@ def risk_return(BG_last_hour):
         return 0
     else:
         _, _, risk_current = risk_index([BG_last_hour[-1]], 1)
-        return -risk_current
+        return (-risk_current + 100) / 144_000
 
 
 class T1DSimEnv(object):
