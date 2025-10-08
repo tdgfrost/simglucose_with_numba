@@ -14,7 +14,7 @@ def risk_index(BG, horizon):
 
 
 @njit
-def risk(BG):
+def risk(BG, w_high=2.0, p_high=2.0):
     """
     Risk is a percentage - ranging from 0 to 100%.
     The 20 and 600 mg/dl are just the values to which the risk formula was fit. 
@@ -34,11 +34,24 @@ def risk(BG):
     
     U = 1.509 * (np.log(BG)**1.084 - 5.381)
 
-    ri = 10 * U**2
+    # Keep hypo side unchanged
+    if U < 0:
+        rl = 10.0 * (np.absolute(U) ** 2.0)
+        rh = 0.0
+    else:
+        # Make hyper stricter: weight and/or increase exponent
+        rh = 10.0 * (w_high * np.absolute(U))** p_high
+        rl = 0.0
 
-    rl, rh = 0.0, 0.0
-    if U <= 0:
-        rl = ri
-    if U >= 0:
-        rh = ri
-    return (rl, rh, ri)
+    ri = rl + rh
+
+    # manual scalar clamp to [0, 100]
+    if rl < 0.0: rl = 0.0
+    elif rl > 100.0: rl = 100.0
+    if rh < 0.0: rh = 0.0
+    elif rh > 100.0: rh = 100.0
+    if ri < 0.0: ri = 0.0
+    elif ri > 100.0: ri = 100.0
+
+    return rl, rh, ri
+
