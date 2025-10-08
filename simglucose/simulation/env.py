@@ -3,7 +3,7 @@ from simglucose.analysis.risk import risk_index
 import pandas as pd
 from datetime import timedelta
 import logging
-from collections import namedtuple
+from collections import namedtuple, deque
 from simglucose.simulation.rendering import Viewer
 
 try:
@@ -81,16 +81,22 @@ class T1DSimEnv(object):
         BG = 0.0
         CGM = 0.0
         reward = 0.0
+        most_recent_CGM = deque(maxlen=3)
+        total_CHO = 0.0
 
         for i in range(int(self.sample_time)):
             # Compute moving average as the sample measurements
             tmp_CHO, tmp_insulin, tmp_BG, tmp_CGM = self.mini_step(action)
             interval_CHO += tmp_CHO
+
             CHO += tmp_CHO / self.sample_time
             insulin += tmp_insulin / self.sample_time
             BG += tmp_BG / self.sample_time
             CGM += tmp_CGM / self.sample_time
             reward += reward_fun([CGM])
+
+            most_recent_CGM.append(tmp_CGM)
+            total_CHO += tmp_CHO
 
             if (i+1) % 3 == 0:
                 self.insulin_hist.append(insulin)
@@ -125,7 +131,7 @@ class T1DSimEnv(object):
         historic_obs = [[i,j] for i,j in zip(self.CGM_hist, self.insulin_hist)]
         if (i+1) % 3 != 0:  # In case sample time is not multiple of 3
             historic_obs.append([CGM, insulin, interval_CHO])
-        obs = Observation(CGM=[CGM, insulin, CHO])
+        obs = Observation(CGM=[sum(most_recent_CGM) / 3, insulin, total_CHO])
 
         return Step(
             observation=obs,
