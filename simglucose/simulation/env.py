@@ -5,6 +5,7 @@ from datetime import timedelta
 import logging
 from collections import namedtuple, deque
 from simglucose.simulation.rendering import Viewer
+import numpy as np
 
 try:
     from rllab.envs.base import Step
@@ -41,26 +42,46 @@ def risk_return(BG_last_hour):
         return (-risk_current + 100) / 144_000
 
 
-def bg_in_range(BG_last_hour, insulin_action):
+def bg_in_range(BG_last_hour, a, a_prev):
     bg = BG_last_hour[0]
     # Global minimum = -1800
     # Global maximum = 24
     w, u, v = 0.5, 0.05, 0.0001
     if bg < 70:
-        r = -w * (70 - bg) ** 2
+        r_bg = -w * (70 - bg) ** 2
     elif bg > 180:
-        r = -u * (bg - 180) ** 2
+        r_bg = -u * (bg - 180) ** 2
     else:
-        r = -v * (bg - 110) ** 2
-
-    # Add a small positive reward for each time step to encourage longer survival
-    r += 10
-
-    # Add insulin bonus
-    r += insulin_bonus(insulin_action)
+        r_bg = -v * (bg - 110) ** 2
+    """
+    # Add daily positive bonus
+    if (bg >= 70) and (insulin_action > 0):
+        r += 100
+    if insulin_action == 0:
+        r -= 10
 
     r /= 1440
 
+    return r
+    """
+    # --- Action cost: discourage large one-offs; smooth zero handling ---
+    # L2 on magnitude plus L2 on change to discourage bursts.
+    r_mag = -0.02 * (a ** 2)
+    r_smooth = -0.01 * ((a - a_prev) ** 2)
+
+    # --- Small-dose shaping: reward small-but-positive doses, saturating ---
+    # Peaks at a = alpha, then decays; avoids pushing to exact zero.
+    alpha = 0.2  # target “micro-bolus” size (units)
+    k = 0.05     # weight of shaping term
+    r_micro = k * (a / (alpha + 1e-8)) * np.exp(-a / (alpha + 1e-8))
+
+    # Optionally bias away from zero only when BG is high enough.
+    # Uses a smooth gate so gradients exist.
+    gate = 1.0 / (1.0 + np.exp(-(bg - 110.0) / 10.0))  # ~0 below 110, ~1 above
+    r_micro *= gate
+
+    # --- Aggregate and scale to per-day magnitude ~O(1) ---
+    r = (r_bg + r_mag + r_smooth + r_micro) * (1 / 1440.0)
     return r
 
 
@@ -128,7 +149,7 @@ class T1DSimEnv(object):
             total_CHO += tmp_CHO
  
             reward += reward_fun([sum(most_recent_CGM) / len(most_recent_CGM)],
-                                 action)
+                                 tmp_insulin, self.insulin_hist[-1])
 
             if (i+1) % 3 == 0:
                 self.insulin_hist.append(insulin)
