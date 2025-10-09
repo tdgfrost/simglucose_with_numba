@@ -41,20 +41,35 @@ def risk_return(BG_last_hour):
         return (-risk_current + 100) / 144_000
 
 
-def bg_in_range(BG_last_hour):
+def bg_in_range(BG_last_hour, insulin_action):
     bg = BG_last_hour[0]
     # Global minimum = -1800
-    # Global maximum = 0
+    # Global maximum = 24
+    w, u, v = 0.5, 0.05, 0.0001
     if bg < 70:
-        r = -0.5 * (70 - bg) ** 2
+        r = -w * (70 - bg) ** 2
     elif bg > 180:
-        r = -0.01 * (bg - 180) ** 2
+        r = -u * (bg - 180) ** 2
     else:
-        r = -0.005 * (bg - 110) ** 2
+        r = -v * (bg - 110) ** 2
 
-    # Scaled to [0, 1] over 1440 minutes
-    r = ((r + 1800) / 1800) / 1440
+    # Add a small positive reward for each time step to encourage longer survival
+    r += 10
+
+    # Add insulin bonus
+    r += insulin_bonus(insulin_action)
+
+    r /= 1440
+
     return r
+
+
+def insulin_bonus(insulin_action):
+    # Encourage more frequent non-zero actions
+    if insulin_action == 0:
+        return -1
+    else:
+        return 0.0
 
 
 class T1DSimEnv(object):
@@ -112,7 +127,8 @@ class T1DSimEnv(object):
             most_recent_CGM.append(tmp_CGM)
             total_CHO += tmp_CHO
  
-            reward += reward_fun([sum(most_recent_CGM) / len(most_recent_CGM)])
+            reward += reward_fun([sum(most_recent_CGM) / len(most_recent_CGM)],
+                                 action)
 
             if (i+1) % 3 == 0:
                 self.insulin_hist.append(insulin)
