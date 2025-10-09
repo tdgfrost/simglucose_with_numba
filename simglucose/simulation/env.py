@@ -49,7 +49,7 @@ def bg_in_range(BG_last_hour):
     elif bg > 180:
         r_bg = -u * (bg - 180) ** 2
     else:
-        r_bg = 10
+        r_bg = 200
 
     r_bg /= 1440
 
