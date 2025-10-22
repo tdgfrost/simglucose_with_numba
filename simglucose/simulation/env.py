@@ -56,12 +56,10 @@ def bg_in_range(BG_last_hour):
     return r_bg
 
 
-def insulin_bonus(insulin_action):
-    # Encourage more frequent non-zero actions
-    if insulin_action == 0:
-        return -1
-    else:
-        return 0.0
+def early_termination_reward(done):
+    if done:
+        return -100
+    return 0
 
 
 class T1DSimEnv(object):
@@ -143,11 +141,9 @@ class T1DSimEnv(object):
         self.LBGI_hist.append(LBGI)
         self.HBGI_hist.append(HBGI)
 
-        # Compute reward, and decide whether game is over
-        # window_size = 20
-        # BG_last_hour = self.CGM_hist[-window_size:]
-        # reward = reward_fun(BG_last_hour)
+        # Compute any additional reward, and decide whether game is over
         done = BG < 10 or BG > 600
+        reward += early_termination_reward(done)
 
         # Observation should be (L, 2) for (CGM, insulin) - capped to last 3 hours
         window_size = 60  # 3 hours of history with 3-min intervals
