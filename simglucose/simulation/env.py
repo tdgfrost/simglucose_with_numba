@@ -24,24 +24,14 @@ Observation = namedtuple("Observation", ["CGM"])
 logger = logging.getLogger(__name__)
 
 
-def risk_diff(BG_last_hour):
-    if len(BG_last_hour) < 2:
-        return 0
-    else:
-        _, _, risk_current = risk_index([BG_last_hour[-1]], 1)
-        _, _, risk_prev = risk_index([BG_last_hour[-2]], 1)
-        return risk_prev - risk_current
-    
-
 def risk_return(BG_last_hour):
     if len(BG_last_hour) < 1:
-        return 0
+        raise ValueError("No blood glucose values available for reward calculation!")
     else:
-        _, _, risk_current = risk_index([BG_last_hour[-1]], 1)
-        return (-risk_current + 100) / 144_000
+        risk_current = risk_index([BG_last_hour[-1]], 1)[-1]
+        return risk_current
 
-
-def bg_in_range(BG_last_hour):
+def bg_in_range_quadratic(BG_last_hour):
     bg = BG_last_hour[0]
     w, u, v = 5.0, 0.01, 0.0001
     if bg < 70:
@@ -54,6 +44,14 @@ def bg_in_range(BG_last_hour):
     r_bg /= 1440
 
     return r_bg
+
+
+def bg_in_range_magni(BG_last_hour):
+    risk_current = risk_return(BG_last_hour)
+
+    reward = 7 - 10 * risk_current
+
+    return reward
 
 
 def early_termination_reward(done):
@@ -92,7 +90,7 @@ class T1DSimEnv(object):
 
         return CHO, insulin, BG, CGM
 
-    def step(self, action, reward_fun=bg_in_range):
+    def step(self, action, reward_fun=bg_in_range_magni):
         """
         action is a namedtuple with keys: basal, bolus
         """
