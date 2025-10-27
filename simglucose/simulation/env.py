@@ -43,7 +43,7 @@ def risk_return(BG_last_hour):
 
 def bg_in_range(BG_last_hour):
     bg = BG_last_hour[0]
-    w, u, v = 0.5, 0.01, 0.0001
+    w, u, v = 5.0, 0.01, 0.0001
     if bg < 70:
         r_bg = -w * (70 - bg) ** 2
     elif bg > 180:
