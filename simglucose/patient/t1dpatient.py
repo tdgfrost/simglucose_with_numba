@@ -132,6 +132,7 @@ def _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, p
                          params_m1, params_m2, params_m4, params_ka1, params_ka2, params_Vi,
                          params_p2u, params_Ib, params_ki, params_m30, params_kd, params_ksc,
                          params_Fsnc):
+    k_smooth = 1e-4
     dxdt = np.zeros(13)
     d = action_CHO * 1000  # g -> mg
     insulin = action_insulin * 6000 / params_BW  # U/min -> pmol/kg/min
@@ -171,22 +172,28 @@ def _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, p
     # Glucose Utilization
     Uiit = params_Fsnc
 
-    # renal excretion
-    if x[3] > params_ke2:
-        Et = params_ke1 * (x[3] - params_ke2)
-    else:
-        Et = 0
+    # Smooth renal excretion
+    # if x[3] > params_ke2:
+    #     Et = params_ke1 * (x[3] - params_ke2)
+    # else:
+    #     Et = 0
+    diff_et = x[3] - params_ke2
+    Et = params_ke1 * (diff_et + np.sqrt(diff_et * diff_et + k_smooth)) / 2
+
+    # Smooth EGPt
+    # replaces max(EGPt, 0)
+    EGPt_smooth = (EGPt + np.sqrt(EGPt * EGPt + k_smooth)) / 2
 
     # glucose kinetics
     # plus dextrose IV injection input u[2] if needed
-    dxdt[3] = max(EGPt, 0) + Rat - Uiit - Et - params_k1 * x[3] + params_k2 * x[4]
-    dxdt[3] = (x[3] >= 0) * dxdt[3]
+    dxdt[3] = EGPt_smooth + Rat - Uiit - Et - params_k1 * x[3] + params_k2 * x[4]
+    # no longer necessary with smooth: dxdt[3] = (x[3] >= 0) * dxdt[3]
 
     Vmt = params_Vm0 + params_Vmx * x[6]
     Kmt = params_Km0
     Uidt = Vmt * x[4] / (Kmt + x[4])
     dxdt[4] = -Uidt + params_k1 * x[3] - params_k2 * x[4]
-    dxdt[4] = (x[4] >= 0) * dxdt[4]
+    # no longer necessary with smooth: dxdt[4] = (x[4] >= 0) * dxdt[4]
 
     # insulin kinetics
     dxdt[5] = (
@@ -196,7 +203,7 @@ def _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, p
             + params_ka2 * x[11]
     )  # plus insulin IV injection u[3] if needed
     It = x[5] / params_Vi
-    dxdt[5] = (x[5] >= 0) * dxdt[5]
+    # no longer necessary with smooth: dxdt[5] = (x[5] >= 0) * dxdt[5]
 
     # insulin action on glucose utilization
     dxdt[6] = -params_p2u * x[6] + params_p2u * (It - params_Ib)
@@ -208,18 +215,18 @@ def _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, p
 
     # insulin in the liver (pmol/kg)
     dxdt[9] = -(params_m1 + params_m30) * x[9] + params_m2 * x[5]
-    dxdt[9] = (x[9] >= 0) * dxdt[9]
+    # no longer necessary with smooth: dxdt[9] = (x[9] >= 0) * dxdt[9]
 
     # subcutaneous insulin kinetics
     dxdt[10] = insulin - (params_ka1 + params_kd) * x[10]
-    dxdt[10] = (x[10] >= 0) * dxdt[10]
+    # no longer necessary with smooth: dxdt[10] = (x[10] >= 0) * dxdt[10]
 
     dxdt[11] = params_kd * x[10] - params_ka2 * x[11]
-    dxdt[11] = (x[11] >= 0) * dxdt[11]
+    # no longer necessary with smooth: dxdt[11] = (x[11] >= 0) * dxdt[11]
 
     # subcutaneous glucose
     dxdt[12] = -params_ksc * x[12] + params_ksc * x[3]
-    dxdt[12] = (x[12] >= 0) * dxdt[12]
+    # no longer necessary with smooth: dxdt[12] = (x[12] >= 0) * dxdt[12]
 
     return dxdt, action_insulin, basal
 
@@ -285,6 +292,8 @@ def _jitted_jacobian(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin
     """
     Calculates the 13x13 Jacobian matrix (df/dx) for the jitted model.
     """
+    k_smooth = 1e-4
+
     # jac[i, j] = d(dxdt[i]) / d(x[j])
     jac = np.zeros((13, 13))
 
@@ -318,17 +327,29 @@ def _jitted_jacobian(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin
         kgut = params_kmax
         # dkgut_dx0 and dkgut_dx1 remain 0.0
 
+    # Smooth Et derivative
+    diff_et = x[3] - params_ke2
+    sqrt_et = np.sqrt(diff_et * diff_et + k_smooth)
+    dEt_dx3 = params_ke1 * (1 + diff_et / sqrt_et) / 2
+
+    # Smooth EGPt derivative
     EGPt = params_kp1 - params_kp2 * x[3] - params_kp3 * x[8]
+    sqrt_egpt = np.sqrt(EGPt * EGPt + k_smooth)
+    dEGPt_factor = (1 + EGPt / sqrt_egpt) / 2
 
-    dEGPt_dx3 = 0.0
-    dEGPt_dx8 = 0.0
-    if EGPt > 0:
-        dEGPt_dx3 = -params_kp2
-        dEGPt_dx8 = -params_kp3
+    # dEGPt_dx3 = 0.0
+    # dEGPt_dx8 = 0.0
+    # if EGPt > 0:
+        # dEGPt_dx3 = -params_kp2
+        # dEGPt_dx8 = -params_kp3
 
-    dEt_dx3 = 0.0
-    if x[3] > params_ke2:
-        dEt_dx3 = params_ke1
+    # dEt_dx3 = 0.0
+    # if x[3] > params_ke2:
+        # dEt_dx3 = params_ke1
+
+    # Chain rule: d(EGPt_smooth)/dx3 = d(EGPt_smooth)/d(EGPt) * d(EGPt)/dx3
+    dEGPt_dx3 = dEGPt_factor * (-params_kp2)
+    dEGPt_dx8 = dEGPt_factor * (-params_kp3)
 
     Vmt = params_Vm0 + params_Vmx * x[6]
     Kmt = params_Km0
@@ -364,23 +385,26 @@ def _jitted_jacobian(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin
     jac[3, 3] = dEGPt_dx3 - dEt_dx3 - params_k1  # from d(EGPt)/d(x[3]), d(Et)/d(x[3]), d(-k1*x3)/d(x[3])
     jac[3, 4] = params_k2  # from d(k2*x4)/d(x[4])
     jac[3, 8] = dEGPt_dx8  # from d(EGPt)/d(x[8])
-    if x[3] < 0:  # Apply non-negativity constraint
-        jac[3, :] = 0.0
+    # No longer needed with smooth:
+    # if x[3] < 0:  # Apply non-negativity constraint
+    #     jac[3, :] = 0.0
 
     # Row 4: dxdt[4] = -Uidt + params_k1 * x[3] - params_k2 * x[4]
     jac[4, 3] = params_k1
     jac[4, 4] = -dUidt_dx4 - params_k2
     jac[4, 6] = -dUidt_dx6
-    if x[4] < 0:  # Apply non-negativity constraint
-        jac[4, :] = 0.0
+    # No longer needed with smooth:
+    # if x[4] < 0:  # Apply non-negativity constraint
+    #     jac[4, :] = 0.0
 
     # Row 5: dxdt[5] = -(m2 + m4)*x[5] + m1*x[9] + ka1*x[10] + ka2*x[11]
     jac[5, 5] = -(params_m2 + params_m4)
     jac[5, 9] = params_m1
     jac[5, 10] = params_ka1
     jac[5, 11] = params_ka2
-    if x[5] < 0:  # Apply non-negativity constraint
-        jac[5, :] = 0.0
+    # No longer needed with smooth:
+    # if x[5] < 0:  # Apply non-negativity constraint
+    #     jac[5, :] = 0.0
 
     # Row 6: dxdt[6] = -p2u*x[6] + p2u*(It - Ib)
     # It = x[5] / Vi
@@ -398,25 +422,29 @@ def _jitted_jacobian(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin
     # Row 9: dxdt[9] = -(m1 + m30)*x[9] + m2*x[5]
     jac[9, 5] = params_m2
     jac[9, 9] = -(params_m1 + params_m30)
-    if x[9] < 0:  # Apply non-negativity constraint
-        jac[9, :] = 0.0
+    # No longer needed with smooth:
+    # if x[9] < 0:  # Apply non-negativity constraint
+    #     jac[9, :] = 0.0
 
     # Row 10: dxdt[10] = insulin - (ka1 + kd)*x[10]
     jac[10, 10] = -(params_ka1 + params_kd)
-    if x[10] < 0:  # Apply non-negativity constraint
-        jac[10, :] = 0.0
+    # No longer needed with smooth:
+    # if x[10] < 0:  # Apply non-negativity constraint
+    #     jac[10, :] = 0.0
 
     # Row 11: dxdt[11] = kd*x[10] - ka2*x[11]
     jac[11, 10] = params_kd
     jac[11, 11] = -params_ka2
-    if x[11] < 0:  # Apply non-negativity constraint
-        jac[11, :] = 0.0
+    # No longer needed with smooth:
+    # if x[11] < 0:  # Apply non-negativity constraint
+    #     jac[11, :] = 0.0
 
     # Row 12: dxdt[12] = -ksc*x[12] + ksc*x[3]
     jac[12, 3] = params_ksc
     jac[12, 12] = -params_ksc
-    if x[12] < 0:  # Apply non-negativity constraint
-        jac[12, :] = 0.0
+    # No longer needed with smooth:
+    # if x[12] < 0:  # Apply non-negativity constraint
+    #     jac[12, :] = 0.0
 
     return jac
 
