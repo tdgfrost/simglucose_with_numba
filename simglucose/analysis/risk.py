@@ -6,7 +6,7 @@ def risk_index(BG, horizon):
     # BG is in mg/dL
     BG_to_compute = BG[-horizon:]
     risks =[risk(r)[-1] for r in BG_to_compute]
-    RI = np.mean([r for r in risks])
+    RI = sum(risks) / len(risks)
 
     return 0, 0, RI
 
