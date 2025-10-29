@@ -124,7 +124,7 @@ class ParamManager:
         return self._pandas_params[key]
 
 
-@njit(fastmath=True)
+@njit(fastmath=True, cache=True)
 def _jitted_model(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, params_BW,
                          params_u2ss, params_kmax, params_b, params_d, params_f, params_kmin,
                          params_kabs, params_kp1, params_kp2, params_kp3, params_ke1,
@@ -274,6 +274,206 @@ def jitted_model(t, x, action, params, last_Qsto, last_foodtaken):
     return dxdt
 
 
+@njit(fastmath=True, cache=True)
+def _jitted_jacobian(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, params_BW,
+                     params_u2ss, params_kmax, params_b, params_d, params_f, params_kmin,
+                     params_kabs, params_kp1, params_kp2, params_kp3, params_ke1,
+                     params_ke2, params_k1, params_k2, params_Vm0, params_Vmx, params_Km0,
+                     params_m1, params_m2, params_m4, params_ka1, params_ka2, params_Vi,
+                     params_p2u, params_Ib, params_ki, params_m30, params_kd, params_ksc,
+                     params_Fsnc):
+    """
+    Calculates the 13x13 Jacobian matrix (df/dx) for the jitted model.
+    """
+    # jac[i, j] = d(dxdt[i]) / d(x[j])
+    jac = np.zeros((13, 13))
+
+    # --- 1. Re-calculate intermediate variables needed for derivatives ---
+
+    qsto = x[0] + x[1]
+    Dbar = last_Qsto + last_foodtaken * 1000
+
+    dkgut_dx0 = 0.0
+    dkgut_dx1 = 0.0
+
+    if Dbar > 0:
+        aa = 5 / (2 * Dbar * (1 - params_b))
+        cc = 5 / (2 * Dbar * params_d)
+
+        tanh_a = np.tanh(aa * (qsto - params_b * Dbar))
+        tanh_c = np.tanh(cc * (qsto - params_d * Dbar))
+
+        kgut = params_kmin + (params_kmax - params_kmin) / 2 * (
+                tanh_a - tanh_c + 2
+        )
+
+        # Derivatives of kgut w.r.t qsto (which depends on x[0] and x[1])
+        # d(tanh(u))/dx = (1 - tanh(u)**2) * du/dx
+        dkgut_dqsto = (params_kmax - params_kmin) / 2 * (
+                (1 - tanh_a ** 2) * aa - (1 - tanh_c ** 2) * cc
+        )
+        dkgut_dx0 = dkgut_dqsto  # d(qsto)/d(x[0]) = 1
+        dkgut_dx1 = dkgut_dqsto  # d(qsto)/d(x[1]) = 1
+    else:
+        kgut = params_kmax
+        # dkgut_dx0 and dkgut_dx1 remain 0.0
+
+    EGPt = params_kp1 - params_kp2 * x[3] - params_kp3 * x[8]
+
+    dEGPt_dx3 = 0.0
+    dEGPt_dx8 = 0.0
+    if EGPt > 0:
+        dEGPt_dx3 = -params_kp2
+        dEGPt_dx8 = -params_kp3
+
+    dEt_dx3 = 0.0
+    if x[3] > params_ke2:
+        dEt_dx3 = params_ke1
+
+    Vmt = params_Vm0 + params_Vmx * x[6]
+    Kmt = params_Km0
+    # d(Uidt)/d(x[4]) = d/dx4 [Vmt * x4 / (Kmt + x4)] (quotient rule)
+    # = Vmt * [ (Kmt + x4)*1 - x4*1 ] / (Kmt + x4)**2
+    # = Vmt * Kmt / (Kmt + x4)**2
+    dUidt_dx4 = Vmt * Kmt / (Kmt + x[4]) ** 2
+
+    # d(Uidt)/d(x[6]) = d/dx6 [ (Vm0 + Vmx*x6) * x4 / (Kmt + x4) ]
+    # = Vmx * x4 / (Kmt + x4)
+    dUidt_dx6 = params_Vmx * x[4] / (Kmt + x[4])
+
+    # It = x[5] / params_Vi
+    dIt_dx5 = 1.0 / params_Vi
+
+    # --- 2. Populate the Jacobian matrix row by row ---
+
+    # Row 0: dxdt[0] = -params_kmax * x[0] + d
+    jac[0, 0] = -params_kmax
+
+    # Row 1: dxdt[1] = params_kmax * x[0] - x[1] * kgut
+    jac[1, 0] = params_kmax - x[1] * dkgut_dx0  # Chain rule
+    jac[1, 1] = -kgut - x[1] * dkgut_dx1  # Product rule
+
+    # Row 2: dxdt[2] = kgut * x[1] - params_kabs * x[2]
+    jac[2, 0] = dkgut_dx0 * x[1]  # Chain rule
+    jac[2, 1] = dkgut_dx1 * x[1] + kgut  # Product rule
+    jac[2, 2] = -params_kabs
+
+    # Row 3: dxdt[3] = max(EGPt, 0) + Rat - Uiit - Et - params_k1 * x[3] + params_k2 * x[4]
+    # Rat = params_f * params_kabs * x[2] / params_BW
+    jac[3, 2] = params_f * params_kabs / params_BW  # from d(Rat)/d(x[2])
+    jac[3, 3] = dEGPt_dx3 - dEt_dx3 - params_k1  # from d(EGPt)/d(x[3]), d(Et)/d(x[3]), d(-k1*x3)/d(x[3])
+    jac[3, 4] = params_k2  # from d(k2*x4)/d(x[4])
+    jac[3, 8] = dEGPt_dx8  # from d(EGPt)/d(x[8])
+    if x[3] < 0:  # Apply non-negativity constraint
+        jac[3, :] = 0.0
+
+    # Row 4: dxdt[4] = -Uidt + params_k1 * x[3] - params_k2 * x[4]
+    jac[4, 3] = params_k1
+    jac[4, 4] = -dUidt_dx4 - params_k2
+    jac[4, 6] = -dUidt_dx6
+    if x[4] < 0:  # Apply non-negativity constraint
+        jac[4, :] = 0.0
+
+    # Row 5: dxdt[5] = -(m2 + m4)*x[5] + m1*x[9] + ka1*x[10] + ka2*x[11]
+    jac[5, 5] = -(params_m2 + params_m4)
+    jac[5, 9] = params_m1
+    jac[5, 10] = params_ka1
+    jac[5, 11] = params_ka2
+    if x[5] < 0:  # Apply non-negativity constraint
+        jac[5, :] = 0.0
+
+    # Row 6: dxdt[6] = -p2u*x[6] + p2u*(It - Ib)
+    # It = x[5] / Vi
+    jac[6, 5] = params_p2u * dIt_dx5
+    jac[6, 6] = -params_p2u
+
+    # Row 7: dxdt[7] = -ki*(x[7] - It)
+    jac[7, 5] = -params_ki * (-dIt_dx5)  # = params_ki * dIt_dx5
+    jac[7, 7] = -params_ki
+
+    # Row 8: dxdt[8] = -ki*(x[8] - x[7])
+    jac[8, 7] = params_ki
+    jac[8, 8] = -params_ki
+
+    # Row 9: dxdt[9] = -(m1 + m30)*x[9] + m2*x[5]
+    jac[9, 5] = params_m2
+    jac[9, 9] = -(params_m1 + params_m30)
+    if x[9] < 0:  # Apply non-negativity constraint
+        jac[9, :] = 0.0
+
+    # Row 10: dxdt[10] = insulin - (ka1 + kd)*x[10]
+    jac[10, 10] = -(params_ka1 + params_kd)
+    if x[10] < 0:  # Apply non-negativity constraint
+        jac[10, :] = 0.0
+
+    # Row 11: dxdt[11] = kd*x[10] - ka2*x[11]
+    jac[11, 10] = params_kd
+    jac[11, 11] = -params_ka2
+    if x[11] < 0:  # Apply non-negativity constraint
+        jac[11, :] = 0.0
+
+    # Row 12: dxdt[12] = -ksc*x[12] + ksc*x[3]
+    jac[12, 3] = params_ksc
+    jac[12, 12] = -params_ksc
+    if x[12] < 0:  # Apply non-negativity constraint
+        jac[12, :] = 0.0
+
+    return jac
+
+
+def jitted_jacobian(t, x, action, params, last_Qsto, last_foodtaken):
+    """
+    Wrapper for the jitted jacobian function.
+    Unpacks action and params objects.
+    """
+    action_CHO = action.CHO
+    action_insulin = action.insulin
+    if not isinstance(action_insulin, (float, int)):
+        action_insulin = action_insulin[0]
+    params_BW = params.BW
+    params_u2ss = params.u2ss
+    params_kmax = params.kmax
+    params_b = params.b
+    params_d = params.d
+    params_f = params.f
+    params_kmin = params.kmin
+    params_kabs = params.kabs
+    params_kp1 = params.kp1
+    params_kp2 = params.kp2
+    params_kp3 = params.kp3
+    params_ke1 = params.ke1
+    params_ke2 = params.ke2
+    params_k1 = params.k1
+    params_k2 = params.k2
+    params_Vm0 = params.Vm0
+    params_Vmx = params.Vmx
+    params_Km0 = params.Km0
+    params_m1 = params.m1
+    params_m2 = params.m2
+    params_m4 = params.m4
+    params_ka1 = params.ka1
+    params_ka2 = params.ka2
+    params_Vi = params.Vi
+    params_p2u = params.p2u
+    params_Ib = params.Ib
+    params_ki = params.ki
+    params_m30 = params.m30
+    params_kd = params.kd
+    params_ksc = params.ksc
+    params_Fsnc = params.Fsnc
+
+    # Call the jitted jacobian
+    jac = _jitted_jacobian(t, x, last_Qsto, last_foodtaken, action_CHO, action_insulin, params_BW,
+                           params_u2ss, params_kmax, params_b, params_d, params_f, params_kmin,
+                           params_kabs, params_kp1, params_kp2, params_kp3, params_ke1,
+                           params_ke2, params_k1, params_k2, params_Vm0, params_Vmx, params_Km0,
+                           params_m1, params_m2, params_m4, params_ka1, params_ka2, params_Vi,
+                           params_p2u, params_Ib, params_ki, params_m30, params_kd, params_ksc,
+                           params_Fsnc)
+
+    return jac
+
+
 class T1DPatient(Patient):
     SAMPLE_TIME = 1  # min
     EAT_RATE = 5  # g/min CHO
@@ -359,10 +559,18 @@ class T1DPatient(Patient):
         # Update last input
         self._last_action = action
 
-        # ODE solver
-        self._odesolver.set_f_params(
-            action, self._params._numba_params, self._last_Qsto, self._last_foodtaken
+        # Get args for ODE solver
+        extra_args = (
+            action,
+            self._params._numba_params,
+            self._last_Qsto,
+            self._last_foodtaken
         )
+
+        # ODE solver
+        self._odesolver.set_f_params(*extra_args)
+        self._odesolver.set_jac_params(*extra_args)
+
         if self._odesolver.successful():
             self._odesolver.integrate(self._odesolver.t + self.sample_time)
         else:
@@ -372,6 +580,10 @@ class T1DPatient(Patient):
     @staticmethod
     def model(t, x, action, params, last_Qsto, last_foodtaken):
         return jitted_model(t, x, action, params, last_Qsto, last_foodtaken)
+
+    @staticmethod
+    def jacobian(t, x, action, params, last_Qsto, last_foodtaken):
+        return jitted_jacobian(t, x, action, params, last_Qsto, last_foodtaken)
 
     @property
     def observation(self):
@@ -415,7 +627,7 @@ class T1DPatient(Patient):
         Reset the patient state to default intial state
         """
         if self._init_state is None:
-            self.init_state = np.copy(self._params.iloc[2:15].values)
+            self.init_state = np.stack(self._params.iloc[2:15].values).copy()
         else:
             self.init_state = self._init_state
 
@@ -443,7 +655,7 @@ class T1DPatient(Patient):
         self._last_foodtaken = 0
         self.name = self._params.Name
 
-        self._odesolver = ode(self.model).set_integrator("dopri5")
+        self._odesolver = ode(self.model, self.jacobian).set_integrator("lsoda")
         self._odesolver.set_initial_value(self.init_state, self.t0)
 
         self._last_action = Action(CHO=0, insulin=0)

@@ -143,11 +143,6 @@ class T1DSimEnv(object):
         done = BG < 10 or BG > 600
         reward += early_termination_reward(done)
 
-        # Observation should be (L, 2) for (CGM, insulin) - capped to last 3 hours
-        window_size = 60  # 3 hours of history with 3-min intervals
-        historic_obs = [[i,j] for i,j in zip(self.CGM_hist, self.insulin_hist)]
-        if (i+1) % 3 != 0:  # In case sample time is not multiple of 3
-            historic_obs.append([CGM, insulin, interval_CHO])
         obs = Observation(CGM=[sum(most_recent_CGM) / len(most_recent_CGM), insulin, total_CHO])
 
         return Step(
@@ -159,7 +154,6 @@ class T1DSimEnv(object):
             meal=CHO,
             patient_state=self.patient.state,
             time=self.time,
-            historic_obs=historic_obs,
             bg=BG,
             lbgi=LBGI,
             hbgi=HBGI,
