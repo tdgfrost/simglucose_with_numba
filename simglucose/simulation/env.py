@@ -112,10 +112,9 @@ class T1DSimEnv(object):
             insulin += tmp_insulin / self.sample_time
             BG += tmp_BG / self.sample_time
             CGM += tmp_CGM / self.sample_time
-            most_recent_CGM.append(tmp_CGM)
             total_CHO += tmp_CHO
  
-            reward += reward_fun([sum(most_recent_CGM) / len(most_recent_CGM)])
+            reward += reward_fun([tmp_CGM])
 
             if (i+1) % 3 == 0:
                 self.insulin_hist.append(insulin)
@@ -143,7 +142,7 @@ class T1DSimEnv(object):
         done = BG < 10 or BG > 600
         reward += early_termination_reward(done)
 
-        obs = Observation(CGM=[sum(most_recent_CGM) / len(most_recent_CGM), insulin, total_CHO])
+        obs = Observation(CGM=[float(tmp_CGM), float(action.basal), total_CHO])
 
         return Step(
             observation=obs,
