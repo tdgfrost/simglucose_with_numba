@@ -683,7 +683,7 @@ class T1DPatient(Patient):
         self._last_foodtaken = 0
         self.name = self._params.Name
 
-        self._odesolver = ode(self.model, self.jacobian).set_integrator("lsoda")
+        self._odesolver = ode(self.model, self.jacobian).set_integrator("lsoda", rtol=1e-6, atol=1e-8)
         self._odesolver.set_initial_value(self.init_state, self.t0)
 
         self._last_action = Action(CHO=0, insulin=0)
