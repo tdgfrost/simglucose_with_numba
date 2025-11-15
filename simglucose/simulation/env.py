@@ -56,7 +56,7 @@ def bg_in_range_magni(BG_last_hour):
 
 def early_termination_reward(done):
     if done:
-        return -100
+        return -10_000
     return 0
 
 
