@@ -51,6 +51,8 @@ def bg_in_range_magni(BG_last_hour):
 
     reward = 7 - 10 * risk_current
 
+    reward = max(reward, reward * 10)
+
     return reward
 
 
