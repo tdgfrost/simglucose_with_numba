@@ -49,7 +49,7 @@ def bg_in_range_quadratic(BG_last_hour):
 def bg_in_range_magni(BG_last_hour):
     risk_current = risk_return(BG_last_hour)
 
-    reward = 7 - 10 * risk_current
+    reward = 5.1 - 10 * risk_current
 
     reward = max(reward, reward * 10)
 
